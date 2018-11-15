@@ -1,0 +1,236 @@
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <style type="text/css">
+      body {
+        margin: 0 auto;
+        max-width: 50em;
+        font-family: "Helvetica", "Arial", sans-serif;
+      }
+    </style>
+  </head>
+<body>
+  <h1>Go concurrency alternatives: Haskell&#39;s race!</h1>
+
+<p><strong>Jan 16, 2018</strong></p>
+
+<p>I&#39;m tired of Go concurrency boilerplate and silly Ruby bugs that could be
+caught by a static type system. This recently brought me to Haskell. I came for
+the fp, and the implicit static type system. And now it looks like I also want
+to stay for the awesome concurrency.</p>
+
+<h2>Haskell&#39;s race function.</h2>
+
+<p>It&#39;s not uncommon to want to run two IO operations concurrently and use the
+result of the operation that completes first.</p>
+
+<p>This is what Haskell&#39;s async package&#39;s <code>race</code> function accomplishes.</p>
+
+<pre><code class="haskell">race :: IO a -&gt; IO b -&gt; IO (Either a b)
+</code></pre>
+
+<p>You give it two &quot;things to do&quot; and it will run them concurrently. It will return
+the result of whichever completes first, and cancel the other one.</p>
+
+<pre><code class="haskell">ghci&gt; race ((threadDelay $ 1^6) &gt;&gt; return 1) (return 2)
+2
+</code></pre>
+
+<p>The first operation will pause for 1 second (1,000,000 micro seconds) and the
+second operation will return immediately. Because the <code>return 2</code> finishes
+before the <code>threadDelay</code>, the <code>return 1</code> is canceled and never completes.</p>
+
+<p>(For those not familiar with the <code>$</code> operation, that&#39;s equivilant to using
+brackets like <code>(threadDelay (1^6))</code>. For those not familiar with the <code>&gt;&gt;</code>
+operation, that&#39;s saying do the thing on the left and then the thing on the
+right. If you come from a Go or Ruby world, <code>return</code> doesn&#39;t mean what you
+think it means... I won&#39;t try to explain it.)</p>
+
+<h2>A naive implementation in Go.</h2>
+
+<p>Here&#39;s a naive Go implementation of <code>race</code>.</p>
+
+<pre><code class="go">type ResultFunction func() interface{}
+
+func race(f1, f2 ResultFunction) interface{} {
+    result := make(chan interface{}, 2)
+
+    go func() { result &lt;- f2() }()
+    go func() { result &lt;- f1() }()
+
+    return &lt;-result
+}
+</code></pre>
+
+<p>Here&#39;s are a couple fake <code>ResultFunction</code>s to test the implementation.</p>
+
+<pre><code class="go">func quickly() interface{} {
+    time.Sleep(1 * time.Second)
+    return &quot;quickly!&quot;
+}
+
+func slowly() interface{} {
+    time.Sleep(3 * time.Second)
+    return &quot;slowly!&quot;
+}
+</code></pre>
+
+<p>And we can see it always returns the faster of the two <code>ResultFunctions</code>.</p>
+
+<pre><code class="go">race(quickly, slowly) == &quot;quickly!&quot;
+race(slowly, quickly) == &quot;quickly!&quot;
+</code></pre>
+
+<p>The implementations inadequacy is exposed when you test it with a blocking
+<code>ResultFunction</code>.</p>
+
+<pre><code class="go">func blocking() interface{} {
+    neverReturn := make(chan interface{})
+    return &lt;-neverReturn
+}
+</code></pre>
+
+<p>At first it seems to behave correctly.</p>
+
+<pre><code class="go">race(blocking, quickly) == &quot;quickly!&quot;
+</code></pre>
+
+<p>But if you think about it, we&#39;ve just leaked a Goroutine.</p>
+
+<p>Go has no way to cancel a Goroutine from the outside. To cancel our
+<code>ResultFunction</code>s, we&#39;re going to have to design them specificly to be
+cancelable.</p>
+
+<h2>Using the context package.</h2>
+
+<p>The Go community has standardised around using the <code>context</code> package to cancel
+Goroutines.</p>
+
+<p>We can rewrite our <code>ResultFunction</code> to take a cancelable <code>context.Context</code>.
+Let&#39;s add error handling while we&#39;re at it.</p>
+
+<pre><code class="go">type ResultFunction func(context.Context) (interface{}, error)
+</code></pre>
+
+<p>This means all our <code>ResultFunction</code>s need to be written in a non-blocking
+<code>context</code> package style.</p>
+
+<pre><code class="go">func quickly(ctx context.Context) (interface{}, error) {
+    select {
+    case &lt;-time.After(1 * time.Second):
+        return &quot;quickly!&quot;, nil
+    case &lt;-ctx.Done():
+        return nil, ctx.Err()
+    }
+}
+
+func slowly(ctx context.Context) (interface{}, error) {
+    select {
+    case &lt;-time.After(3 * time.Second):
+        return &quot;slowly!&quot;, nil
+    case &lt;-ctx.Done():
+        return nil, ctx.Err()
+    }
+}
+
+func blocking(ctx context.Context) (interface{}, error) {
+    select {
+    case &lt;-ctx.Done():
+        return nil, ctx.Err()
+    }
+}
+</code></pre>
+
+<p>And here&#39;s the new implementation of <code>race</code>.</p>
+
+<pre><code class="go">func race(ctx context.Context, f1, f2 ResultFunction) (interface{}, error) {
+    result := make(chan interface{}, 2)
+    fail := make(chan error, 2)
+
+    ctx, cancel := context.WithCancel(ctx)
+    defer cancel()
+
+    go func() {
+        r, err := f1(ctx)
+        if err != nil {
+            fail &lt;- err
+        } else {
+            result &lt;- r
+        }
+    }()
+
+    go func() {
+        r, err := f2(ctx)
+        if err != nil {
+            fail &lt;- err
+        } else {
+            result &lt;- r
+        }
+    }()
+
+    select {
+    case r := &lt;-result:
+        return r, nil
+
+    case err := &lt;-fail:
+        return nil, err
+
+    case &lt;-ctx.Done():
+        return nil, ctx.Err()
+    }
+}
+</code></pre>
+
+<p>Let&#39;s test out with are old test cases.</p>
+
+<pre><code class="go">race(context.Background(), quickly, slowly) == (&quot;quickly!&quot;, nil)
+race(context.Background(), blocking, quickly) == (&quot;quickly!&quot;, nil)
+</code></pre>
+
+<p>And this time, the blocking function returns.</p>
+
+<p>We can also test top level cancelation.</p>
+
+<pre><code class="go">ctx, cancel := context.WithCancel(context.Background())
+go func() {
+  _, err := race(ctx, quickly, slowly) // err != nil
+}()
+cancel()
+</code></pre>
+
+<p>And we can test a function that fails, causes the other one to cancel.</p>
+
+<pre><code class="go">_, err := race(context.Background(), erroring, blocking) // err == &quot;Boom!&quot;
+</code></pre>
+
+<h2>The pain points.</h2>
+
+<p>Now that we&#39;ve implemented <code>race</code> in Go, let&#39;s discuss it&#39;s issues.</p>
+
+<h3><code>context</code> boilerplate at the call site.</h3>
+
+<p>Though I find that always passing around context values to be annoying, this is
+an effective way to encode a sort of cancelation tree into your program.</p>
+
+<h3>Non blocking <code>ResultFunctions</code>.</h3>
+
+<p>This is a huge pain point. I need to design all the functions I want to run
+concurrently such that they respond to <code>cancel</code> and never block. This means
+lots of <code>select</code> boilerplate. Because I&#39;m writing the boilerplate by hand,
+there&#39;s always room for bugs. And I can&#39;t use other people&#39;s blocking code
+because it will leak Goroutines.</p>
+
+<h3>Type <code>interface{}</code>.</h3>
+
+<p>The Go community is probably tired of hearing it, but fuck am I tired of not
+having generics.</p>
+
+<h2>Haskell&#39;s solution.</h2>
+
+<p>So far, my experience with Haskell&#39;s <code>async</code> package has been great. It
+relieves the annoyances of Go quite well. I&#39;m going to keep on experimenting
+with it and report back with more findings.</p>
+
+  <p><a href="/">Index</a></p>
+</body>

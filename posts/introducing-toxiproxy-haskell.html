@@ -1,0 +1,235 @@
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <style type="text/css">
+      body {
+        margin: 0 auto;
+        max-width: 50em;
+        font-family: "Helvetica", "Arial", sans-serif;
+      }
+    </style>
+  </head>
+<body>
+  <h1>Introducing Toxiproxy Haskell</h1>
+
+<p><strong>Mar 10, 2018</strong></p>
+
+<p>With the release of <a href="https://github.com/jpittis/toxiproxy-haskell">toxiproxy-haskell</a> on
+<a href="https://hackage.haskell.org/package/toxiproxy-haskell">Hackage</a>, I&#39;d like to introduce
+the Haskell community to failure testing using Toxiproxy so that they can improve the
+resilience of their network connected applications.</p>
+
+<h2>Toxiproxy</h2>
+
+<p>Toxiproxy is a cross platform TCP proxy that lets you simulate latency, timeouts,
+rejections and other network conditions in your test and development environments.</p>
+
+<p>I think the best way to explain how Toxiproxy works is through an example. Let&#39;s create a
+proxy to simulate latency between a redis client and server.</p>
+
+<p>We start by running <code>toxiproxy-server</code> from a terminal. Toxiproxy exposes an HTTP API on
+port 8474.</p>
+
+<pre><code class="bash">$ toxiproxy-server
+INFO[0000] API HTTP server starting                      host=localhost port=8474 version=git-fe6bf4f
+</code></pre>
+
+<p>We then create a proxy using <code>toxiproxy-cli</code>. We&#39;re going to call our proxy <code>redis</code> and
+instruct Toxiproxy to listen for TCP requests on port 4444 and forward them to the default
+redis port 6379.</p>
+
+<pre><code class="bash">$ toxiproxy-cli create redis --listen 127.0.0.1:4444  --upstream 127.0.0.1:6379
+Created new proxy redis
+</code></pre>
+
+<p>Finally, let&#39;s add a toxic to our proxy. Toxics are used to inject network failures into
+a proxy. In this case, we&#39;re adding a latency toxic which will add 1 second of latency to
+data flowing from the redis server back to the redis client.</p>
+
+<pre><code class="bash">$ toxiproxy-cli toxic add redis --type latency --attribute latency=1000 --attribute jitter=0
+Added downstream latency toxic &#39;latency_downstream&#39; on proxy &#39;redis&#39;
+</code></pre>
+
+<p>Now we can test it out.</p>
+
+<p>Start a redis server in a second terminal.</p>
+
+<pre><code class="bash">$ redis-server
+58968:M 04 Mar 21:13:39.957 * Ready to accept connections
+</code></pre>
+
+<p>When using the redis client, we must specify the port of our proxy rather than the default
+redis port. A simple <code>GET KEY</code> command will prove that the request takes 1 second to
+respond rather than the usual immediate response.</p>
+
+<pre><code class="bash">$ redis-cli -p 4444
+127.0.0.1:4444&gt; GET KEY
+(nil)
+(1.00s)
+</code></pre>
+
+<p>Toxiproxy supports more kinds of network failures than just added latency. The command
+line interface has provided us with a simple example to demonstrate how Toxiproxy works.
+The rest of this post is going to explain how you can use
+<a href="https://github.com/jpittis/toxiproxy-haskell">toxiproxy-haskell</a> to write failure tests
+for your Haskell applications and hopefully make them more resilient to external failures.</p>
+
+<h2>Toxiproxy Haskell</h2>
+
+<p><a href="https://github.com/jpittis/toxiproxy-haskell">toxiproxy-haskell</a> exposes a simple
+<a href="https://hackage.haskell.org/package/servant">servant</a> HTTP API. Though you&#39;re welcome to
+use this low level API, I&#39;ve written three higher level helpers to make working with
+Toxiproxy a little easier.</p>
+
+<p>Let&#39;s recreate our redis latency example from above using
+<a href="https://hackage.haskell.org/package/hedis">hedis</a> and
+<a href="https://github.com/jpittis/toxiproxy-haskell">toxiproxy-haskell</a>.</p>
+
+<p>Here&#39;s a function that measures the duration of a set and get to redis.</p>
+
+<pre><code class="haskell">{-# LANGUAGE OverloadedStrings #-}
+
+import qualified Database.Redis as Redis
+import qualified Data.Time.Clock.POSIX as Time
+import qualified Data.Map.Strict as Map
+
+timeSetGet port = do
+  before &lt;- Time.getPOSIXTime
+
+  conn &lt;- Redis.checkedConnect Redis.defaultConnectInfo { Redis.connectPort = port }
+  Redis.runRedis conn $ do
+    Redis.set &quot;haskell&quot; &quot;is awesome&quot;
+    Redis.get &quot;haskell&quot;
+
+  after &lt;- Time.getPOSIXTime
+  return $ after - before
+
+timeSetGetNormal = timeSetGet (Redis.PortNumber 6379)
+</code></pre>
+
+<p>We can run it from the repl. Don&#39;t forget to have <code>toxiproxy-server</code> and <code>redis-server</code>
+running in the background!</p>
+
+<pre><code class="bash">$ stack repl example.hs
+&gt; timeSetGetNormal
+0.001758s
+</code></pre>
+
+<p>Now to add some latency with Toxiproxy.</p>
+
+<pre><code class="haskell">import Toxiproxy
+
+timeSetGetWithLatency = do
+  let proxy = Proxy
+        { proxyName     = &quot;redis&quot;
+        , proxyListen   = &quot;127.0.0.1:4444&quot;
+        , proxyUpstream = &quot;127.0.0.1:6379&quot;
+        , proxyEnabled  = True
+        , proxyToxics   = []
+        }
+  let latency = Toxic
+        { toxicName       = &quot;latency&quot;
+        , toxicType       = Latency
+        , toxicStream     = Downstream
+        , toxicToxicity   = 1
+        , toxicAttributes = Map.fromList [(&quot;latency&quot;, 1000), (&quot;jitter&quot;, 0)]
+        }
+  withProxy proxy $ \proxy -&gt;
+    withToxic proxy latency (timeSetGet (Redis.PortNumber 4444))
+</code></pre>
+
+<p>And of course, since we&#39;re sending two serial commands to redis, with our toxic activated
+it takes two seconds.</p>
+
+<pre><code class="bash">$ stack repl example.hs
+&gt; timeSetGetWithLatency
+2.008837s
+</code></pre>
+
+<h2>Writing Tests to Improve Resilience</h2>
+
+<p>How can you use <a href="https://github.com/jpittis/toxiproxy-haskell">toxiproxy-haskell</a> to
+improve your application&#39;s resilience?</p>
+
+<ol>
+<li>Find an external TCP call that your application makes.</li>
+<li>Write a test to ensure your application behaves correctly during network failure.</li>
+</ol>
+
+<p>Let&#39;s see how <a href="https://hackage.haskell.org/package/hedis">hedis</a> behaves when redis is
+rejecting connections!</p>
+
+<p>For example, let&#39;s write a wrapper around the <code>Redis.get</code> call that returns a fallback on
+failure.</p>
+
+<pre><code class="haskell">import Control.Exception
+import Data.ByteString
+
+getWithFallback key fallback port = do
+  result &lt;- try run :: IO (Either SomeException
+                                  (Either Redis.Reply (Maybe ByteString)))
+  case result of
+    Left _        -&gt; fallback
+    Right success -&gt; return success
+   where
+    run = do
+      conn &lt;- Redis.checkedConnect Redis.defaultConnectInfo { Redis.connectPort = port }
+      Redis.runRedis conn (Redis.get key)
+</code></pre>
+
+<p>How would we test this function out to ensure it behaves as we want when redis crashes?
+Let&#39;s write a Toxiproxy test!</p>
+
+<pre><code class="haskell">main = hspec $
+  describe &quot;Redis Resilience&quot; $
+    it &quot;getWithFallback returns a default value when redis is down&quot; $ do
+      let proxy = Proxy
+            { proxyName     = &quot;redis&quot;
+            , proxyListen   = &quot;127.0.0.1:4444&quot;
+            , proxyUpstream = &quot;127.0.0.1:6379&quot;
+            , proxyEnabled  = True
+            , proxyToxics   = []
+            }
+      withProxy proxy $ \proxy -&gt;
+        withDisabled proxy $
+          getWithFallback &quot;haskell&quot; (return . Right . Just $ &quot;no&quot;) (Redis.PortNumber 4444)
+            `shouldReturn` (Right . Just $ &quot;no&quot;)
+</code></pre>
+
+<p>When implementing and using libraries that perform external calls, tests similar to the
+one shown above can be used to ensure correct behaviour during network failure.</p>
+
+<h2>Avoiding Regression</h2>
+
+<p>Though testing with <code>toxiproxy-cli</code> or one off scripts is better than nothing, generally
+we want our Toxiproxy tests to be permanent. Writing an automatable hspec Toxiproxy test
+is demonstrated above. This means that your test will be run on every release of your
+application to avoid regression.</p>
+
+<h2>What Toxiproxy Isn&#39;t</h2>
+
+<p>It&#39;s important to realize that Toxiproxy is a layer 4 proxy. It does not deal in IP
+packets but instead at the TCP stream level. This makes it difficult to simulate timeouts
+related to TCP connection establishment and time until <code>accept(2)</code>.</p>
+
+<p>Toxiproxy is not currently protocol aware. It does not understand what HTTP is, instead it
+just forwards the bytes. This can make it hard to test HTTPS because a client will think
+it&#39;s connecting to Toxiproxy on host A but it will receive a certificate for the upstream
+host B. Currently, this issue must be handled by the client.</p>
+
+<p>Toxiproxy should not be used in production. It&#39;s only designed for use in linux, OSX and
+windows test and development environments. I would not recommend it to be used to proxy
+production traffic.</p>
+
+<h2>Thanks</h2>
+
+<p>It would be great if the Haskell community could start using tools like Toxiproxy to
+improve our applications resilience. The Haskell Toxiproxy client is only about 300 lines
+of code. Pull requests and questions are welcome on Github or by email!</p>
+
+<p>There&#39;s nothing worse than finding out how your application reacts to a network blip in
+production! Find out in development and test using Toxiproxy!</p>
+
+  <p><a href="/">Index</a></p>
+</body>

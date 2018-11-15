@@ -1,0 +1,61 @@
+#!/usr/bin/ruby
+
+require 'redcarpet'
+require 'date'
+
+def article_template(body, is_archive = false)
+%{
+<!DOCTYPE html>
+<html>
+  <head>
+    <style type="text/css">
+      body {
+        margin: 0 auto;
+        max-width: 50em;
+        font-family: "Helvetica", "Arial", sans-serif;
+      }
+    </style>
+  </head>
+<body>
+  #{body}
+  #{ is_archive ? nil : %{<p><a href="/">Index</a></p>} }
+</body>
+}
+end
+
+def archive_template(article_metadata)
+  article_metadata = article_metadata.sort_by {|_, _, date| Date.parse(date) }.reverse!
+  links = article_metadata.map do |name, title, date|
+    %{<p><a href=/posts/#{name}.html>#{date}: #{title}</a></p>}
+  end.join("\n  ")
+  "<h1>Posts</h1>\n#{links}"
+end
+
+def post_names
+  Dir["articles/*.md"].map do |file|
+    file[0..-4].gsub('posts/', '')
+  end
+end
+
+def render_article(filename)
+  markdown = Redcarpet::Markdown.new(Redcarpet::Render::HTML, fenced_code_blocks: true)
+  body = markdown.render(File.read(filename))
+  article_template(body)
+end
+
+def render_archive
+  article_metadata = Dir["articles/*.md"].map do |filename|
+    title, _, date = File.foreach(filename).first(3)
+    name = filename[0..-4].gsub('articles/', '')
+    [name, title[1..-1].strip, date.tr('*', '').strip]
+  end
+  body = archive_template(article_metadata)
+  article_template(body, true)
+end
+
+File.open('index.html', 'w') { |f| f.write(render_archive) }
+
+Dir["articles/*.md"].each do |filename|
+  post_path = filename[0..-4].gsub('articles/', 'posts/') + '.html'
+  File.open(post_path, 'w') { |f| f.write(render_article(filename)) }
+end

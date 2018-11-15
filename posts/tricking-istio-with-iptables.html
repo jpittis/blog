@@ -1,0 +1,176 @@
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <style type="text/css">
+      body {
+        margin: 0 auto;
+        max-width: 50em;
+        font-family: "Helvetica", "Arial", sans-serif;
+      }
+    </style>
+  </head>
+<body>
+  <h1>Tricking Istio into ignoring inbound packets</h1>
+
+<p><strong>Nov 20, 2018</strong></p>
+
+<p>This post documents my adventure trying to get Istio to ignore inbound packets on a certain port. (I don&#39;t recommend doing this in production!) It ended up teaching me a bit about iptables and how Istio uses them to force all inbound and outbound traffic through it&#39;s proxy.</p>
+
+<h2>What&#39;s Istio and how does it relate to iptables?</h2>
+
+<p>Istio is a Service Mesh which you can learn about <a href="https://istio.io/docs/concepts/what-is-istio/">here</a>.</p>
+
+<p>A key idea of a service mesh is to stick a proxy in front of every application and force all inbound and outbound network traffic to flow through this proxy. This means all traffic automatically benefits off the features provided by this proxy.</p>
+
+<p><img src="https://github.com/jpittis/blog/raw/master/static/proxy.png%20=200x" alt="Istio proxy intercepts all inbound IP traffic for the pod."></p>
+
+<p>In Istio&#39;s case, this &quot;forcing&quot; of inbound and outbound network traffic is accomplished using iptables.</p>
+
+<h2>Figuring out what iptables rules Istio uses.</h2>
+
+<p>We&#39;re running Istio in Kubernetes where our applications run in separate Linux namespaces. Since iptables rules are namespaced we should be able to quickly find out what rules Istio added to our application&#39;s pod using the <code>iptables --list</code> command from within the pod.</p>
+
+<p>Let&#39;s exec into our application&#39;s proxy and find out!  </p>
+
+<pre><code>kubectl exec &lt;pod&gt; --container istio-proxy -it -- /bin/bash 
+$ iptables --list  
+iptables v1.6.0: can&#39;t initialize iptables table `filter&#39;: Permission denied (you must be root)
+Perhaps iptables or your kernel needs to be upgraded.  
+</code></pre>
+
+<p>Oh no! I&#39;m pretty sure this error occurs because the pod doesn&#39;t have the <code>NET_ADMIN</code> capability.</p>
+
+<p>A quick <code>kubectl describe</code> shows that the <code>istio-proxy</code> pod doesn&#39;t have the <code>NET_ADMIN</code> capability. How the heck did Istio manage to add iptables rules then?</p>
+
+<p>If you scan through the pod&#39;s init containers, you&#39;ll see that Istio created an init container with the <code>NET_ADMIN</code> capability. That&#39;s how it managed to muck with iptables rules!</p>
+
+<p>You can find the iptables related script that runs in the Istio&#39;s init container <a href="https://github.com/istio/istio/blob/ec7f44dc672830d47f46ca0c4b6a84b5e0188575/tools/deb/istio-iptables.sh">here</a>.</p>
+
+<p>In my case, rather than giving the pod the right privilege, I decided to ssh into the glcoud node it was running on and enter the namespace of the pod using <code>nsenter</code>.</p>
+
+<pre><code>$ gcloud compute ssh &lt;node&gt;
+$ docker ps  
+...
+&lt;container-id&gt; ...
+...
+$ docker inspect -f &#39;{{ .State.Pid }}&#39; &lt;container-id&gt;  
+&lt;pid&gt;
+sudo nsenter --target &lt;pid&gt; --uts --ipc --net --pid  
+</code></pre>
+
+<p>Istio creates it&#39;s rules in the <code>nat</code> table so we can list just that table with <code>-t nat</code>.</p>
+
+<p>This time we get some useful output!  </p>
+
+<pre><code># iptables -t nat --list
+Chain PREROUTING (policy ACCEPT)
+target     prot opt source               destination
+ISTIO_INBOUND  tcp  --  anywhere             anywhere
+
+Chain INPUT (policy ACCEPT)
+target     prot opt source               destination
+
+Chain OUTPUT (policy ACCEPT)
+target     prot opt source               destination
+ISTIO_OUTPUT  tcp  --  anywhere             anywhere
+
+Chain POSTROUTING (policy ACCEPT)
+target     prot opt source               destination
+
+Chain ISTIO_INBOUND (1 references)
+target     prot opt source               destination
+ISTIO_IN_REDIRECT  tcp  --  anywhere             anywhere             tcp dpt:http-alt
+ISTIO_IN_REDIRECT  tcp  --  anywhere             anywhere             tcp dpt:8888
+
+Chain ISTIO_IN_REDIRECT (2 references)
+target     prot opt source               destination
+REDIRECT   tcp  --  anywhere             anywhere             redir ports 15001
+
+Chain ISTIO_OUTPUT (1 references)
+target     prot opt source               destination
+ISTIO_REDIRECT  all  --  anywhere            !localhost
+RETURN     all  --  anywhere             anywhere             owner UID match 1337
+RETURN     all  --  anywhere             anywhere             owner GID match 1337
+RETURN     all  --  anywhere             localhost
+ISTIO_REDIRECT  all  --  anywhere             anywhere
+
+Chain ISTIO_REDIRECT (2 references)
+target     prot opt source               destination
+REDIRECT   tcp  --  anywhere             anywhere             redir ports 15001
+</code></pre>
+
+<h2>Following inbound packets.</h2>
+
+<p>The above shows iptables rules that are applied to packets when they arrive and leave the pod.</p>
+
+<p>Because we&#39;re interested in inbound packets only, we can start at the <code>PREROUTING</code> rule.</p>
+
+<pre><code>Chain PREROUTING (policy ACCEPT)
+target     prot opt source               destination
+ISTIO_INBOUND  tcp  --  anywhere             anywhere
+</code></pre>
+
+<p>This says take all TCP traffic and apply the <code>ISTIO_INBOUND</code> rules.</p>
+
+<p>So let&#39;s go see what <code>ISTIO_INBOUND</code> does.</p>
+
+<pre><code>Chain ISTIO_INBOUND (1 references)
+target     prot opt source               destination
+ISTIO_IN_REDIRECT  tcp  --  anywhere             anywhere             tcp dpt:http-alt
+ISTIO_IN_REDIRECT  tcp  --  anywhere             anywhere             tcp dpt:8888 
+</code></pre>
+
+<p><code>http-alt</code> in this case is another way of saying port <code>8080</code>. This rule says take all TCP traffic with a destination port of <code>8080</code> or <code>8888</code> and apply the <code>ISTIO_IN_REDIRECT</code> rule.</p>
+
+<p>Why port <code>8080</code> and <code>8888</code>? Istio saw that our Kubernetes pod is exposing those two ports so it&#39;s setup iptables rules for both of them automatically.</p>
+
+<pre><code>Chain ISTIO_IN_REDIRECT (2 references)
+target     prot opt source               destination
+REDIRECT   tcp  --  anywhere             anywhere             redir ports 15001
+</code></pre>
+
+<p><code>ISTIO_IN_REDIRECT</code> is even simpler. It just says to take all TCP traffic and redirect it to port <code>15001</code>!</p>
+
+<p>Guess what port the Istio proxy is running on!?</p>
+
+<p>If you guessed <code>15001</code>, you&#39;re right!</p>
+
+<p>So in summary, these rules are saying: Take all inbound TCP traffic for the listening ports of this Kubernetes pod and redirect them to the Istio proxy!</p>
+
+<h2>Tricking Istio!</h2>
+
+<p>So now we know <code>ISTIO_IN_REDIRECT</code> is redirecting our inbound traffic to the Istio proxy. All we need to do is inject a rule that runs before it and <code>RETURN</code>s the packet early, skipping the redirect.</p>
+
+<p>Here&#39;s the command to add our new rule:</p>
+
+<pre><code>iptables -t nat -I PREROUTING -p tcp --dport 8888 -j RETURN
+</code></pre>
+
+<p>I only want to trick Istio into not intercepting packets for port <code>8888</code>. I still want <code>8080</code> to go through the proxy. So I&#39;ve selected a destination port of <code>8888</code>.</p>
+
+<p><code>-I PREROUTING</code> means to prepend the rule to the front of the <code>PREROUTING</code> chain. <a href="https://github.com/istio/istio/blob/ec7f44dc672830d47f46ca0c4b6a84b5e0188575/tools/deb/istio-iptables.sh#L250">Istio&#39;s script uses -A</a> which appends it&#39;s rule to the end of <code>PREROUTING</code>. By using <code>-I</code>, we can ensure our rule runs before Istio&#39;s rule. </p>
+
+<p>If you list the <code>nat</code> table again, you&#39;ll find our rule has been added!</p>
+
+<pre><code>Chain PREROUTING (policy ACCEPT)
+target     prot opt source               destination
+RETURN     tcp  --  anywhere             anywhere             tcp dpt:8888
+ISTIO_INBOUND  tcp  --  anywhere             anywhere  
+</code></pre>
+
+<p>In my case, I wanted to add this rule automatically to a bunch of Kubernetes pods. The easiest thing for me to do at the time was to create my own init container that ran our sneakily crafted iptables rule from above. Don&#39;t forget to give the init container <code>NET_ADMIN</code> so it&#39;s allowed to use iptables. (Make sure you&#39;re using a container base image that has the <code>iptables</code> command. I used <code>ubuntu:xenial</code> because that&#39;s what the Istio init container uses.)</p>
+
+<pre><code>initContainers:
+- name: jakes-sneaky-init-container
+  image: &lt;an-image-that-runs-our-script&gt;
+  securityContext:
+    capabilities:
+      add:
+      - NET_ADMIN  
+</code></pre>
+
+<p>And there we have it! A quick reminder that I don&#39;t recommend making these changes to production Istio. The advantages of a service mesh are best met when all traffic flows through its proxies. (I&#39;m thinking of security features like mTLS in this case but I&#39;m sure there are lots of other reasons.)</p>
+
+  <p><a href="/">Index</a></p>
+</body>

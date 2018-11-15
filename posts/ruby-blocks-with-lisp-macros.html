@@ -1,0 +1,122 @@
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <style type="text/css">
+      body {
+        margin: 0 auto;
+        max-width: 50em;
+        font-family: "Helvetica", "Arial", sans-serif;
+      }
+    </style>
+  </head>
+<body>
+  <h1>Ruby Blocks with Lisp Macros</h1>
+
+<p><strong>Jul 23, 2017</strong></p>
+
+<p>The ruby block and yield syntax is really useful for hiding away setup and
+cleanup code. For example, we can write <code>with_open_socket</code> which opens a TCP
+connection, yields to the caller and then closes the connection as cleanup
+after the caller is finished.</p>
+
+<pre><code class="ruby">require &#39;socket&#39;
+
+def with_open_socket(addr, port)
+  socket = TCPSocket.new(addr, port)
+  yield socket
+  socket.close
+end
+</code></pre>
+
+<p>This makes it easy for us to use a TCP client without worrying about how to
+setup or cleanup.</p>
+
+<pre><code class="ruby">with_open_socket(&#39;www.google.com&#39;, 80) do |socket|
+  socket.write(&quot;GET / HTTP/1.1\r\n\r\n&quot;)
+  socket.gets
+end
+
+=&gt; &quot;HTTP/1.1 302 Found&quot;
+</code></pre>
+
+<p>I&#39;ve been messing around with Lisp lately and have wondered about the Lisp way
+of doing something similar.</p>
+
+<p>Because Lisp doesn&#39;t have (to my knowledge) a similar block syntax, we
+can do something similar by passing in an anonymous function. Doing
+setup, calling the function and then doing cleanup.</p>
+
+<pre><code class="lisp">(require :usocket) ; You may need to (ql:quickload :usocket)
+
+(defun with_open_socket (addr port f)
+  (let* ((socket (usocket:socket-connect addr port))
+         (stream (usocket:socket-stream socket))
+         (result (funcall f stream)))
+    (usocket:socket-close socket))
+    result)
+</code></pre>
+
+<p>Using our <code>with_open_socket</code> turns out to be very similar to the ruby
+version except that we need to wrap our code in a lambda. Writing a
+get request to a socket is much cleaner in Ruby but let&#39;s ignore that
+today.</p>
+
+<pre><code class="lisp">(with_open_socket &quot;www.google.com&quot; 80
+                  (lambda (stream)
+                    (format stream &quot;GET / HTTP/1.1~C~C~C~C&quot;
+                            #\Return #\Newline #\Return #\Newline)
+                    (force-output stream)
+                    (read-line stream)))
+
+=&gt; &quot;HTTP/1.1 302 Found&quot;
+</code></pre>
+
+<p>Now I&#39;d like to see if we can forget the lambda and add a similar
+block syntax to Lisp using a macro.</p>
+
+<pre><code class="lisp">(defmacro with-open-socket ((addr port) &amp;body body)
+  `(let* ((socket (usocket:socket-connect ,addr ,port))
+          (stream (usocket:socket-stream socket))
+          (result (progn ,@body)))
+     (usocket:socket-close socket)
+     result))
+</code></pre>
+
+<p>At read / compile time, <code>addr</code> and <code>port</code> arguments replace <code>,addr</code> and
+<code>,port</code>. The body argument is pasted into the let statement.</p>
+
+<p>We can call this macro similarly to above except that we no longer
+need to pass in a lambda.</p>
+
+<pre><code class="lisp">(with-open-socket (&quot;www.google.com&quot; 80)
+  (format stream &quot;GET / HTTP/1.1~C~C~C~C&quot;
+          #\Return #\Newline #\Return #\Newline)
+  (force-output stream)
+  (read-line stream))
+
+=&gt; &quot;HTTP/1.1 302 Found&quot;
+</code></pre>
+
+<p>At read / compile time, the above macro call is expanded into the following.</p>
+
+<pre><code class="lisp">(let* ((socket (usocket:socket-connect &quot;www.google.com&quot; 80))
+       (stream (usocket:socket-stream socket))
+       (result (progn
+                 (format stream &quot;GET / HTTP/1.1~C~C~C~C&quot;
+                         #\Return #\Newline #\Return #\Newline)
+                 (force-output stream)
+                 (read-line stream))))
+  (usocket:socket-close socket)
+  result)
+</code></pre>
+
+<p><code>with-open-socket</code> is effectively new syntax to the language that ends
+up just as clean as the Ruby block syntax.</p>
+
+<p>An interesting tidbit is that emacs knows that the the macro <code>with-open-socket</code>
+has a <code>body</code> argument which means it&#39;s auto formatted with a two space indent
+rather than formatting the body like a normal function call argument.</p>
+
+  <p><a href="/">Index</a></p>
+</body>
