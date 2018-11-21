@@ -8,11 +8,11 @@ This post documents my adventure trying to get Istio to ignore inbound packets o
 
 Istio is a Service Mesh which you can learn about [here](https://istio.io/docs/concepts/what-is-istio/).
 
-A key idea of a service mesh is to stick a proxy in front of every application and force all inbound and outbound network traffic to flow through this proxy. This means all traffic automatically benefits off the features provided by this proxy.
+A key idea of a service mesh is to stick a proxy in front of every application and force all inbound and outbound network traffic to flow through this proxy. This means all traffic automatically benefits off the features provided by this proxy. Istio uses a proxy called Envoy which sits in front of every application a bit like this:
 
 <img src="https://github.com/jpittis/blog/raw/master/static/proxy.png" alt="Istio proxy intercepts all inbound IP traffic for the pod." style="max-width:30em;"/>
 
-In Istio's case, this "forcing" of inbound and outbound network traffic is accomplished using iptables.
+In Istio's case, this "forcing" of inbound and outbound network traffic to Envoy is accomplished using iptables.
 
 ## Figuring out what iptables rules Istio uses.
 
@@ -125,15 +125,15 @@ REDIRECT   tcp  --  anywhere             anywhere             redir ports 15001
   
 `ISTIO_IN_REDIRECT` is even simpler. It just says to take all TCP traffic and redirect it to port `15001`!
 
-Guess what port the Istio proxy is running on!?
+Guess what port Envoy is running on!?
 
 If you guessed `15001`, you're right!
 
-So in summary, these rules are saying: Take all inbound TCP traffic for the listening ports of this Kubernetes pod and redirect them to the Istio proxy!
+So in summary, these rules are saying: Take all inbound TCP traffic for the listening ports of this Kubernetes pod and redirect them to Envoy!
 
 ## Tricking Istio!
 
-So now we know `ISTIO_IN_REDIRECT` is redirecting our inbound traffic to the Istio proxy. All we need to do is inject a rule that runs before it and `RETURN`s the packet early, skipping the redirect.
+So now we know `ISTIO_IN_REDIRECT` is redirecting our inbound traffic to the proxy. All we need to do is inject a rule that runs before it and `RETURN`s the packet early, skipping the redirect.
 
 Here's the command to add our new rule:
 

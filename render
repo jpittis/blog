@@ -43,12 +43,15 @@ def render_article(filename)
   article_template(body)
 end
 
-def render_archive
-  article_metadata = Dir["articles/*.md"].map do |filename|
+def article_metadata
+  Dir["articles/*.md"].map do |filename|
     title, _, date = File.foreach(filename).first(3)
     name = filename[0..-4].gsub('articles/', '')
     [name, title[1..-1].strip, date.tr('*', '').strip]
   end
+end
+
+def render_archive
   body = archive_template(article_metadata)
   article_template(body, true)
 end
