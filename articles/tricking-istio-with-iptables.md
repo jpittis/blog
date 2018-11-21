@@ -10,7 +10,7 @@ Istio is a Service Mesh which you can learn about [here](https://istio.io/docs/c
 
 A key idea of a service mesh is to stick a proxy in front of every application and force all inbound and outbound network traffic to flow through this proxy. This means all traffic automatically benefits off the features provided by this proxy.
 
-![Istio proxy intercepts all inbound IP traffic for the pod.](https://github.com/jpittis/blog/raw/master/static/proxy.png =50x)
+<img src="https://github.com/jpittis/blog/raw/master/static/proxy.png" alt="Istio proxy intercepts all inbound IP traffic for the pod." style="max-width:30em;"/>
 
 In Istio's case, this "forcing" of inbound and outbound network traffic is accomplished using iptables.
 
