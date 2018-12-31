@@ -1,0 +1,272 @@
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <style type="text/css">
+      body {
+        margin: 0 auto;
+        max-width: 50em;
+        font-family: "Helvetica", "Arial", sans-serif;
+      }
+    </style>
+  </head>
+<body>
+  <h1>Getting Productive With Clojure</h1>
+
+<p><strong>Dec 30, 2018</strong></p>
+
+<p>I recently wrote my first real program in Clojure! (<a href="https://github.com/jpittis/zookeyper">A simple HTTP based write
+though key value cache built on top of
+Zookeeper.</a>)</p>
+
+<p>What do I mean by a real program? In the past I&#39;ve read books and written small toy
+scripts but I&#39;ve never tackled problems similar to ones I might be solving at work.</p>
+
+<p>The goal of this post is to share some things that got me from an empty directory to
+useful program in the hope that others might try the same. This isn&#39;t best practice or
+expert advice, but it worked for me!</p>
+
+<h2>Install Clojure</h2>
+
+<p>Clojure has a <a href="https://clojure.org/guides/getting_started">Getting Started</a> guide for
+installation.</p>
+
+<h2>Use Leiningen</h2>
+
+<p>Leiningen is a program that takes care of creating and automating Clojure projects. There
+are other ways to get started with Clojure, but this worked really well for me! I
+installed Leiningen using my package manager but there are also <a href="https://leiningen.org/#install">installation
+instructions</a> on the project&#39;s website.</p>
+
+<p>I wanted to write an executable so <code>lein new app &lt;project-name&gt;</code> got me started. I
+proceeded to delete all the files that didn&#39;t seem relevant to me. (This will likely make
+some people cringe!)</p>
+
+<pre><code class="bash">$ lein new app my-project
+$ cd my-project
+$ rm CHANGELOG.md
+$ rm LICENSE
+$ rm -rf doc/
+$ rm -rf resources/
+$ rm README.md
+
+</code></pre>
+
+<p>I also went into the <code>project.clj</code> file and deleted the description, url and license
+lines.</p>
+
+<pre><code>  :description &quot;FIXME: write description&quot;
+  :url &quot;http://example.com/FIXME&quot;
+  :license {:name &quot;EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0&quot;
+            :url &quot;https://www.eclipse.org/legal/epl-2.0/&quot;}
+</code></pre>
+
+<p>Now we have a really simple directory structure that&#39;s easy to undertand and
+expain!</p>
+
+<pre><code class="bash">$ tree
+.
+├── project.clj
+├── src
+│   └── my-project
+│       └── core.clj
+└── test
+    └── my-project
+        └── core_test.clj
+</code></pre>
+
+<p><code>core.clj</code> contains your executable&#39;s main function. <code>core_test.clj</code> contains
+your tests. You can run them respectively with <code>lein run</code> and <code>lein test</code>.</p>
+
+<pre><code class="bash">$ lein run
+Hello, World!
+$ lein test
+
+lein test my-project.core-test
+
+lein test :only my-project.core-test/a-test
+
+FAIL in (a-test) (core_test.clj:7)
+FIXME, I fail.
+expected: (= 0 1)
+  actual: (not (= 0 1))
+
+Ran 1 tests containing 1 assertions.
+1 failures, 0 errors.
+Tests failed.
+</code></pre>
+
+<h2>Better test output</h2>
+
+<p>I found that the default test output to be hard to follow for complex failures.</p>
+
+<p>I created the following file in <code>~/.lein/profiles.clj</code>.</p>
+
+<pre><code class="clojure">{:user {:dependencies [[pjstadig/humane-test-output &quot;0.8.3&quot;]]
+        :injections [(require &#39;pjstadig.humane-test-output)
+                     (pjstadig.humane-test-output/activate!)]}}
+</code></pre>
+
+<p>Now the test output includes a diff:</p>
+
+<pre><code>$ lein test
+
+lein test my-project.core-test
+
+lein test :only my-project.core-test/a-test
+
+FAIL in (a-test) (core_test.clj:7)
+FIXME, I fail.
+expected: 0
+  actual: 1
+    diff: - 0
+          + 1
+
+Ran 1 tests containing 1 assertions.
+1 failures, 0 errors.
+Tests failed.
+</code></pre>
+
+<h2>Running a single test</h2>
+
+<p>Kinda verbose but whatever.</p>
+
+<pre><code class="bash">$ lein test :only my-project.core-test/a-test
+</code></pre>
+
+<h2>No you don&#39;t need to learn Emacs or setup a fancy REPL</h2>
+
+<p>There&#39;s lots of talk in the Clojure and Lisp community of fancy REPLs, using Emacs and
+SLIME. (<a href="/posts/macro-expansion-with-slime.html">I&#39;ve used SLIME before and it&#39;s very
+cool!</a>)</p>
+
+<p>You don&#39;t need it to get started!</p>
+
+<p>My development flow looks something like this:</p>
+
+<ul>
+<li>Open Clojure files in neovim with syntax highlighting and paren matching.
+(Most editors should have these by default.)</li>
+<li>Have a terminal open where I run <code>lein test</code> and <code>lein run</code> when needed.</li>
+<li>Sometimes run <code>lein repl</code> to experiment interactively.</li>
+</ul>
+
+<p>I want to explore more fancy REPL stuff in the future, but this got me
+productive!</p>
+
+<h2>Multiple files</h2>
+
+<p>I wanted to factor my code into multiple files and was having trouble figuring
+out how to create multiple namespaces and all this fancy stuff. Here&#39;s
+something super simple to get started!</p>
+
+<ul>
+<li>Create a file beside <code>core.clj</code> for example <code>app.clj</code>.</li>
+<li>Add a namespace definition to the top of <code>app.clj</code> just like in <code>core.clj</code>.</li>
+</ul>
+
+<pre><code class="clojure">(ns my-project.core)
+</code></pre>
+
+<ul>
+<li>Load <code>app.clj</code> from <code>core.clj</code>.</li>
+</ul>
+
+<pre><code class="clojure">(load &quot;app&quot;)
+</code></pre>
+
+<p>Multiple namespaces are probably the way to go for larger projects, but this
+worked great for me!</p>
+
+<h2>Using Libaries</h2>
+
+<p>Let&#39;s add the Ring HTTP library as an example.</p>
+
+<p>Start by adding the dependency to your <code>project.clj</code> file.</p>
+
+<pre><code>  :dependencies [[org.clojure/clojure &quot;1.10.0&quot;]
+                 [ring/ring-core &quot;1.7.1&quot;]]
+</code></pre>
+
+<p>Then download the dependency. (Running <code>lein test</code> or <code>lein run</code> should do the
+the same thing.)</p>
+
+<pre><code>$ lein deps
+</code></pre>
+
+<p>We can then require the functions we need in our file&#39;s namespace definition.</p>
+
+<pre><code class="clojure">(ns my-project.core
+  (:require [ring.middleware.json :as ring :refer [wrap-json-body]]))
+</code></pre>
+
+<p>You can can use the function with <code>ring/wrap-json-body</code>.</p>
+
+<h2>Useful Libraries</h2>
+
+<p>Here are some useful libraries. I&#39;ve used them all in <a href="https://github.com/jpittis/zookeyper">this
+project</a> so that may be a good place to
+see how they&#39;re used.</p>
+
+<h3>HTTP</h3>
+
+<ul>
+<li><code>ring/ring-core</code> for HTTP handlers.</li>
+<li><code>ring/ring-json</code> for JSON HTTP handlers.</li>
+<li><code>ring/ring-mock</code> to test HTTP handlers.</li>
+<li><code>ring/ring-jetty-adapter</code> for a ring compatible HTTP server.</li>
+<li><code>compojure</code> for HTTP routes.</li>
+</ul>
+
+<h3>Command line parsing</h3>
+
+<ul>
+<li><code>org.clojure/tools.cli</code> for general purpose option parsing.</li>
+</ul>
+
+<h3>JSON</h3>
+
+<ul>
+<li><code>cheshire</code> for JSON parsing.</li>
+</ul>
+
+<h3>Zookeeper</h3>
+
+<p>Likely not relevant but I used <code>zookeeper-clj</code> as a Zookeeper client.</p>
+
+<h2>Useful Features, Macros and Functions</h2>
+
+<ul>
+<li><code>-&gt;</code> and <code>-&gt;&gt;</code> to avoid nested function calls.</li>
+<li>Atoms for synchronization between threads.</li>
+<li><code>try</code>, <code>catch</code> and <code>finally</code> for exception handling and resource cleanup.</li>
+</ul>
+
+<h2>Documentation</h2>
+
+<p>Use <code>(doc &lt;function-name&gt;)</code> from the REPL for quick documentation lookup.</p>
+
+<h2>Experience</h2>
+
+<p>A few things I don&#39;t like:</p>
+
+<ul>
+<li>The error messages are often much longer than they ought to be!</li>
+<li>I&#39;m less a fan of the JVM because of memory usage, startup time and because I&#39;m so used
+to accessing unix APIs.</li>
+</ul>
+
+<p>Things that were great:</p>
+
+<ul>
+<li>I&#39;ve written a bit of Lisp before so parentheses don&#39;t scare me. My previous functional
+programming experience made me productive from the start.</li>
+<li>All libraries use the same base immutable datastructures which makes data consistent and
+easy to manipulate.</li>
+<li>Tooling is pretty solid. (I&#39;ve seen better but I&#39;ve also seen a lot worse!)</li>
+</ul>
+
+<p>I&#39;m generally pleased with the experience!</p>
+
+  <p><a href="/">Index</a></p>
+</body>
