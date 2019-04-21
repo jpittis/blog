@@ -1,0 +1,80 @@
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <style type="text/css">
+      body {
+        margin: 0 auto;
+        max-width: 50em;
+        font-family: "Helvetica", "Arial", sans-serif;
+      }
+    </style>
+  </head>
+<body>
+  <h1>Envoy Hot Restart Mystery</h1>
+
+<p><strong>Apr 21, 2019</strong></p>
+
+<p>I&#39;ve been working on a tool that requires a way to reset the configuration of a local
+development Envoy. The Envoy admin&#39;s <code>/quitquitquit</code> endpoint combined with the
+<code>docker-compose</code> <code>restart: always</code> parameter does the trick but it&#39;s quite slow.
+Fourtunately Envoy has a &quot;hot restart&quot; feature that can reset an Envoy&#39;s configuration
+without the slow container restart.</p>
+
+<p>We start Envoy using the provided
+<a href="https://github.com/envoyproxy/envoy/blob/master/restarter/hot-restarter.py">envoy/restarter/hot-restarter.py</a>
+script which will restart Envoy when it receives a <code>SIGHUP</code>.</p>
+
+<pre><code>hot-restarter.py start-envoy.sh
+</code></pre>
+
+<p>Don&#39;t forget the include the <code>$RESTART_EPOCH</code> flag in your <code>start-envoy.sh</code> script.</p>
+
+<pre><code>--restart-epoch $RESTART_EPOCH \
+</code></pre>
+
+<p>We can then send a <code>SIGHUP</code> signal to the container which will trigger a hot restart.</p>
+
+<pre><code>$ docker kill --signal=SIGHUP &lt;your-proxy-container&gt;
+</code></pre>
+
+<p>And now we can check the <code>restart_epoch</code> before and after the <code>SIGHUP</code> to see if Envoy has
+restarted.</p>
+
+<pre><code>$ curl -s localhost:9901/server_info | grep restart_epoch
+  &quot;restart_epoch&quot;: 0,
+$ docker kill --signal=SIGHUP &lt;your-proxy-container&gt;
+$ curl -s localhost:9901/server_info | grep restart_epoch
+  &quot;restart_epoch&quot;: 1,
+</code></pre>
+
+<h2>The Mystery</h2>
+
+<p>My tool doesn&#39;t use <code>curl</code> to query Envoy&#39;s <code>restart_epoch</code>. Instead, I use Go&#39;s <code>http</code>
+pacakge and a bit of protobuf parsing. Something along the lines of this:</p>
+
+<pre><code class="go">client := &amp;http.Client{
+    Timeout: time.Second,
+}
+resp, err := client.Get(&quot;http://127.0.0.1:9901/server_info&quot;)
+if err != nil {
+    return nil, err
+}
+defer resp.Body.Close()
+
+var serverInfo v2alpha.ServerInfo
+err = jsonpb.Unmarshal(resp.Body, &amp;serverInfo)
+return &amp;serverInfo, err
+</code></pre>
+
+<p>The mystery is that if I use the above code to query the restart epoch before and after a
+hot restart, the client takes an absurdly long time to show the updated restart epoch.
+(Think 20 seconds.) I can <code>curl</code> for the restart epoch and get the bumped epoch version
+while my Go client is still returning the old one.</p>
+
+<p>I suspect this is some issue where my Go client is still connected to the old Envoy rather
+than the new one. Not sure how to fix this yet. Currently I&#39;m shelling out to <code>curl</code>. I&#39;ll
+update this post when I&#39;ve found a less hacky solution.</p>
+
+  <p><a href="/">Index</a></p>
+</body>
