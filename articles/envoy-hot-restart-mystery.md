@@ -42,7 +42,7 @@ $ curl -s localhost:9901/server_info | grep restart_epoch
 ## The Mystery
 
 My tool doesn't use `curl` to query Envoy's `restart_epoch`. Instead, I use Go's `http`
-pacakge and a bit of protobuf parsing. Something along the lines of this:
+package and a bit of protobuf parsing. Something along the lines of this:
 
 ```go
 client := &http.Client{
