@@ -30,7 +30,7 @@ script which will restart Envoy when it receives a <code>SIGHUP</code>.</p>
 
 <p>Don&#39;t forget the include the <code>$RESTART_EPOCH</code> flag in your <code>start-envoy.sh</code> script.</p>
 
-<pre><code>--restart-epoch $RESTART_EPOCH \
+<pre><code>--restart-epoch $RESTART_EPOCH
 </code></pre>
 
 <p>We can then send a <code>SIGHUP</code> signal to the container which will trigger a hot restart.</p>
@@ -51,7 +51,7 @@ $ curl -s localhost:9901/server_info | grep restart_epoch
 <h2>The Mystery</h2>
 
 <p>My tool doesn&#39;t use <code>curl</code> to query Envoy&#39;s <code>restart_epoch</code>. Instead, I use Go&#39;s <code>http</code>
-pacakge and a bit of protobuf parsing. Something along the lines of this:</p>
+package and a bit of protobuf parsing. Something along the lines of this:</p>
 
 <pre><code class="go">client := &amp;http.Client{
     Timeout: time.Second,
